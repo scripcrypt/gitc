@@ -1,0 +1,408 @@
+#!/usr/bin/php
+<?php
+
+
+	if (!isset($argv[1])) {
+		help();
+		exit(0);
+	}
+
+	$cmd = (string)$argv[1];
+	if ($cmd === '') {
+		help();
+		exit(0);
+	}
+	if ($cmd[0] !== '-') {
+		$cmd = '-' . $cmd;
+	}
+
+
+	$cma = [
+		"-h" => [
+			"aliases" => ["help", "h"],
+			"title" => "ヘルプ",
+			"fnc" => function() {
+				help();
+				return false;
+			}
+		],
+		"-acp" => [
+			"aliases" => ["cpa", "acp"],
+			"title" => "追加→コミット→プッシュ (add/commit/push)",
+			"notation" => "gitc -acp コミットコメント",
+			"fnc" => function() {
+				global $argv;
+				if (!isset($argv[2])) { echo "Commit comment is required.\n"; return false; }
+				return true;
+			},
+			"coms" => function() {
+				global $argv;
+				return [
+					"git add -A;",
+					"git commit -m " . escapeshellarg($argv[2]) . ";",
+					"git push;"
+				];
+			}
+		],
+		"-st" => [
+			"title" => "状態表示（短縮） (status -sb)",
+			"notation" => "gitc -st",
+			"coms" => [
+				"git status -sb;"
+			]
+		],
+		"-pl" => [
+			"title" => "取り込み（rebase） (pull --rebase)",
+			"notation" => "gitc -pl",
+			"coms" => [
+				"git pull --rebase;"
+			]
+		],
+		"-ps" => [
+			"title" => "送信 (push)",
+			"notation" => "gitc -ps",
+			"coms" => [
+				"git push;"
+			]
+		],
+		"-d" => [
+			"title" => "差分表示 (diff)",
+			"notation" => "gitc -d",
+			"coms" => [
+				"git diff;"
+			]
+		],
+		"-ds" => [
+			"title" => "差分表示（ステージ済み） (diff --staged)",
+			"notation" => "gitc -ds",
+			"coms" => [
+				"git diff --staged;"
+			]
+		],
+		"-lg" => [
+			"title" => "履歴表示（グラフ） (log --graph)",
+			"notation" => "gitc -lg",
+			"coms" => [
+				"git log --oneline --graph --decorate --all;"
+			]
+		],
+		"-br" => [
+			"title" => "ブランチ一覧 (branch)",
+			"notation" => "gitc -br",
+			"coms" => [
+				"git branch;"
+			]
+		],
+		"-sw" => [
+			"title" => "ブランチ切り替え（作成しない） (switch)",
+			"notation" => "gitc -sw <branch>",
+			"fnc" => function() {
+				global $argv;
+				if (!isset($argv[2]) || $argv[2] === '') { echo "Branch name is required.\n"; return false; }
+				$branch = $argv[2];
+				if (!git_local_branch_exists($branch)) {
+					echo "Branch does not exist: {$branch}\n";
+					echo "If you want to create it: gitc -new {$branch}\n";
+					return false;
+				}
+				return true;
+			},
+			"coms" => function() {
+				global $argv;
+				return [
+					"git switch " . escapeshellarg($argv[2]) . ";"
+				];
+			},
+			"help_coms" => [
+				"git switch <branch>;"
+			]
+		],
+		"-new" => [
+			"title" => "新規ブランチ作成→切り替え (switch -c)",
+			"notation" => "gitc -new <branch>",
+			"fnc" => function() {
+				global $argv;
+				if (!isset($argv[2]) || $argv[2] === '') { echo "Branch name is required.\n"; return false; }
+				$branch = $argv[2];
+				if (git_local_branch_exists($branch)) {
+					echo "Branch already exists: {$branch}\n";
+					return false;
+				}
+				return true;
+			},
+			"coms" => function() {
+				global $argv;
+				return [
+					"git switch -c " . escapeshellarg($argv[2]) . ";"
+				];
+			},
+			"help_coms" => [
+				"git switch -c <branch>;"
+			]
+		],
+		"-ss" => [
+			"title" => "一時退避（保存） (stash push)",
+			"notation" => "gitc -ss [message]",
+			"coms" => function() {
+				global $argv;
+				$msg = $argv[2] ?? "wip";
+				return [
+					"git stash push -m " . escapeshellarg($msg) . ";"
+				];
+			},
+			"help_coms" => [
+				"git stash push -m <message>;"
+			]
+		],
+		"-sp" => [
+			"title" => "一時退避（復元） (stash pop)",
+			"notation" => "gitc -sp",
+			"coms" => [
+				"git stash pop;"
+			]
+		],
+		"-sync" => [
+			"title" => "リモート同期（prune） (fetch --prune)",
+			"notation" => "gitc -sync",
+			"coms" => [
+				"git fetch --prune;"
+			]
+		],
+		"-tidy" => [
+			"title" => "マージ済みブランチ一覧 (branch --merged)",
+			"notation" => "gitc -tidy",
+			"coms" => [
+				"git branch --merged;"
+			]
+		],
+		"-status" => [
+			"title" => "状態サマリー（ブランチ/最新コミット/差分） (summary)",
+			"notation" => "gitc -status",
+			"fnc" => function() {
+				print_status_summary();
+				return false;
+			}
+		],
+		"-rs" => [
+			"title" => "リセット（要確認） (reset)",
+			"notation" => "gitc -rs <reset args...>",
+			"fnc" => function() {
+				global $argv;
+				if (!isset($argv[2])) {
+					echo "Reset args are required. Example: gitc -rs --soft HEAD~1\n";
+					return false;
+				}
+				$argStr = implode(' ', array_slice($argv, 2));
+				return confirm("Run: git reset {$argStr} ? [y/N]: ");
+			},
+			"coms" => function() {
+				global $argv;
+				$args = array_map('escapeshellarg', array_slice($argv, 2));
+				return [
+					"git reset " . implode(' ', $args) . ";"
+				];
+			},
+			"help_coms" => [
+				"git reset <args...>;"
+			]
+		],
+		"-undo" => [
+			"title" => "直前の操作を取り消す（要確認） (undo)",
+			"notation" => "gitc -undo",
+			"fnc" => function() {
+				if (git_has_worktree_changes()) {
+					if (!confirm("Discard ALL local changes (staged + unstaged)? [y/N]: ")) {
+						return false;
+					}
+					run_commands([
+						"git restore --staged .;",
+						"git restore .;"
+					]);
+					return false;
+				}
+
+				if (!confirm("Undo last commit with soft reset (keep changes staged)? [y/N]: ")) {
+					return false;
+				}
+				return true;
+			},
+			"coms" => [
+				"git reset --soft HEAD~1;"
+			]
+		],
+		"-rescue" => [
+			"title" => "reflog から失ったコミットを救出 (rescue)",
+			"notation" => "gitc -rescue [HEAD@{n} | <hash>]",
+			"fnc" => function() {
+				global $argv;
+				if (!isset($argv[2])) {
+					echo "Pick an entry from reflog and pass it as arg. Example: gitc -rescue HEAD@{5}\n\n";
+					passthru("git reflog -n 20 --date=iso");
+					echo "\n";
+					return false;
+				}
+				$target = $argv[2];
+				$branch = "rescue-" . date('Ymd-His');
+				echo "Create branch {$branch} at {$target}\n";
+				if (!confirm("OK? [y/N]: ")) {
+					return false;
+				}
+				return true;
+			},
+			"coms" => function() {
+				global $argv;
+				$target = $argv[2];
+				$branch = "rescue-" . date('Ymd-His');
+				return [
+					"git branch " . escapeshellarg($branch) . " " . escapeshellarg($target) . ";",
+					"git switch " . escapeshellarg($branch) . ";"
+				];
+			},
+			"help_coms" => [
+				"git reflog -n 20;",
+				"git branch rescue-YYYYmmdd-HHMMSS <target>;",
+				"git switch rescue-YYYYmmdd-HHMMSS;"
+			]
+		],
+	];
+
+	$cma = expand_aliases($cma);
+
+
+
+
+	if (isset($cma[$cmd])) {
+		$com = $cma[$cmd];
+		if (isset($com["fnc"])) {
+			$fnc = $com["fnc"];
+			if(!$fnc()) { exit; }
+		}
+
+		if (!isset($com["coms"])) {
+			help();
+			exit(1);
+		}
+
+		$coms = $com["coms"];
+		if (is_callable($coms)) {
+			$coms = $coms();
+		}
+		run_commands($coms);
+		exit(0);
+	}
+
+	help();
+	exit(1);
+
+
+
+
+	function help() {
+		global $cma;
+		echo "git コマンド簡略化拡張コマンド\n\n";
+		echo "引数      説明\n";
+		echo "-----+--------------------------------\n";
+		foreach ($cma as $c => $cm) {
+			if (isset($cm["_is_alias"]) && $cm["_is_alias"]) {
+				continue;
+			}
+			echo str_pad($c, 10, " ") . ($cm["title"] ?? "") . "\n";
+			if (isset($cm["notation"])) {
+				echo str_repeat(" ", 14) . $cm["notation"] . "\n";
+			}
+			$helpComs = null;
+			if (isset($cm["help_coms"])) {
+				$helpComs = $cm["help_coms"];
+			} elseif (isset($cm["coms"]) && is_array($cm["coms"])) {
+				$helpComs = $cm["coms"];
+			}
+			if (is_array($helpComs)) {
+				for ($i = 0, $ci = count($helpComs); $i < $ci; $i++) {
+					echo str_repeat(" ", 18) . $helpComs[$i] . "\n";
+				}
+			}
+		}
+	}
+
+	function run_commands($coms) {
+		if (!is_array($coms)) {
+			echo "Internal error: coms must be array.\n";
+			exit(1);
+		}
+		$command = implode("\n", $coms);
+		echo "\$ " . $command . "\n";
+		passthru($command);
+		echo "\n";
+	}
+
+	function confirm($prompt) {
+		fwrite(STDOUT, $prompt);
+		$line = fgets(STDIN);
+		if ($line === false) {
+			return false;
+		}
+		$line = trim($line);
+		return ($line === 'y' || $line === 'Y');
+	}
+
+	function expand_aliases($cma) {
+		foreach ($cma as $key => $def) {
+			if (!isset($def["aliases"]) || !is_array($def["aliases"])) {
+				continue;
+			}
+			foreach ($def["aliases"] as $alias) {
+				$alias = (string)$alias;
+				$aliasDash = ($alias !== '' && $alias[0] === '-') ? $alias : '-' . $alias;
+				if (isset($cma[$aliasDash])) {
+					continue;
+				}
+				$cma[$aliasDash] = $def;
+				$cma[$aliasDash]["_is_alias"] = true;
+			}
+		}
+		return $cma;
+	}
+
+	function git_local_branch_exists($branch) {
+		$branch = trim((string)$branch);
+		if ($branch === '') {
+			return false;
+		}
+		$ref = "refs/heads/" . $branch;
+		$cmd = "git show-ref --verify --quiet " . escapeshellarg($ref);
+		passthru($cmd, $ret);
+		return $ret === 0;
+	}
+
+	function git_has_worktree_changes() {
+		$out = [];
+		$ret = 0;
+		exec("git status --porcelain", $out, $ret);
+		if ($ret !== 0) {
+			return false;
+		}
+		return trim(implode("\n", $out)) !== '';
+	}
+
+	function print_status_summary() {
+		$branch = trim(shell_exec("git branch --show-current"));
+		$last = trim(shell_exec("git log -1 --oneline --decorate"));
+		$dirty = git_has_worktree_changes() ? "dirty" : "clean";
+
+		$upstream = trim(shell_exec("git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null"));
+		$aheadBehind = "(no upstream)";
+		if ($upstream !== '') {
+			$counts = trim(shell_exec("git rev-list --left-right --count @{upstream}...HEAD 2>/dev/null"));
+			if ($counts !== '') {
+				list($behind, $ahead) = array_pad(preg_split('/\s+/', $counts), 2, '0');
+				$aheadBehind = "ahead {$ahead}, behind {$behind} vs {$upstream}";
+			}
+		}
+
+		echo "BRANCH : " . ($branch !== '' ? $branch : "(detached)") . "\n";
+		echo "LAST   : " . ($last !== '' ? $last : "(none)") . "\n";
+		echo "REMOTE : " . $aheadBehind . "\n";
+		echo "TREE   : " . $dirty . "\n\n";
+		passthru("git status -sb");
+		echo "\n";
+	}
