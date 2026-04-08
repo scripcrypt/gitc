@@ -32,7 +32,9 @@
 			"notation" => "gitc -acp コミットコメント",
 			"fnc" => function() {
 				global $argv;
-				if (!isset($argv[2])) { echo "Commit comment is required.\n"; return false; }
+				if (!isset($argv[2])) {
+					echo "Commit comment is required.\n"; return false; 
+				}
 				return true;
 			},
 			"coms" => function() {
@@ -43,6 +45,13 @@
 					"git push;"
 				];
 			}
+		],
+		"-s" => [
+			"title" => "状態表示",
+			"notation" => "gitc -st",
+			"coms" => [
+				"git status;"
+			]
 		],
 		"-st" => [
 			"title" => "状態表示（短縮） (status -sb)",
@@ -178,10 +187,13 @@
 		"-status" => [
 			"title" => "状態サマリー（ブランチ/最新コミット/差分） (summary)",
 			"notation" => "gitc -status",
-			"fnc" => function() {
-				print_status_summary();
-				return false;
-			}
+			"coms" => [
+				"git branch --show-current;",
+				"git log -1 --oneline --decorate;",
+				"git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null;",
+				"git rev-list --left-right --count @{upstream}...HEAD 2>/dev/null;",
+				"git status -sb;"
+			]
 		],
 		"-rs" => [
 			"title" => "リセット（要確認） (reset)",
@@ -235,12 +247,7 @@
 			"notation" => "gitc -rescue [HEAD@{n} | <hash>]",
 			"fnc" => function() {
 				global $argv;
-				if (!isset($argv[2])) {
-					echo "Pick an entry from reflog and pass it as arg. Example: gitc -rescue HEAD@{5}\n\n";
-					passthru("git reflog -n 20 --date=iso");
-					echo "\n";
-					return false;
-				}
+				if (!isset($argv[2])) { return true; }
 				$target = $argv[2];
 				$branch = "rescue-" . date('Ymd-His');
 				echo "Create branch {$branch} at {$target}\n";
@@ -251,6 +258,12 @@
 			},
 			"coms" => function() {
 				global $argv;
+				if (!isset($argv[2])) {
+					echo "Pick an entry from reflog and pass it as arg. Example: gitc -rescue HEAD@{5}\n\n";
+					return [
+						"git reflog -n 20 --date=iso;"
+					];
+				}
 				$target = $argv[2];
 				$branch = "rescue-" . date('Ymd-His');
 				return [
@@ -329,10 +342,37 @@
 			echo "Internal error: coms must be array.\n";
 			exit(1);
 		}
-		$command = implode("\n", $coms);
-		echo "\$ " . $command . "\n";
-		passthru($command);
+		$ret = 0;
+		foreach ($coms as $command) {
+			$command = trim((string)$command);
+			if ($command === '') {
+				continue;
+			}
+			$command = normalize_git_color_command($command);
+			echo "\$ " . $command . "\n";
+			passthru($command, $ret);
+			if ($ret !== 0) {
+				exit($ret);
+			}
+		}
 		echo "\n";
+	}
+
+	function normalize_git_color_command($command) {
+		// If output is not a TTY (e.g. IDE output pane), git may disable colors.
+		// Force colors for common git commands while keeping behavior for non-git commands.
+		$trim = ltrim($command);
+		if (!preg_match('/^git\s+/', $trim)) {
+			return $command;
+		}
+
+		if (!preg_match('/\s--no-pager(\s|;|$)/', $command)) {
+			$command = preg_replace('/^git\s+/', 'git --no-pager ', $command, 1);
+		}
+		if (!preg_match('/color\.ui=always/', $command) && !preg_match('/\s--color(=|\s)/', $command)) {
+			$command = preg_replace('/^git\s+/', 'git -c color.ui=always ', $command, 1);
+		}
+		return $command;
 	}
 
 	function confirm($prompt) {
@@ -382,27 +422,4 @@
 			return false;
 		}
 		return trim(implode("\n", $out)) !== '';
-	}
-
-	function print_status_summary() {
-		$branch = trim(shell_exec("git branch --show-current"));
-		$last = trim(shell_exec("git log -1 --oneline --decorate"));
-		$dirty = git_has_worktree_changes() ? "dirty" : "clean";
-
-		$upstream = trim(shell_exec("git rev-parse --abbrev-ref --symbolic-full-name @{upstream} 2>/dev/null"));
-		$aheadBehind = "(no upstream)";
-		if ($upstream !== '') {
-			$counts = trim(shell_exec("git rev-list --left-right --count @{upstream}...HEAD 2>/dev/null"));
-			if ($counts !== '') {
-				list($behind, $ahead) = array_pad(preg_split('/\s+/', $counts), 2, '0');
-				$aheadBehind = "ahead {$ahead}, behind {$behind} vs {$upstream}";
-			}
-		}
-
-		echo "BRANCH : " . ($branch !== '' ? $branch : "(detached)") . "\n";
-		echo "LAST   : " . ($last !== '' ? $last : "(none)") . "\n";
-		echo "REMOTE : " . $aheadBehind . "\n";
-		echo "TREE   : " . $dirty . "\n\n";
-		passthru("git status -sb");
-		echo "\n";
 	}
