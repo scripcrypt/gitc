@@ -34,6 +34,8 @@ gitc -h
 
 ### 基本
 
+- `gitc -s`
+  - `git status`
 - `gitc -st`
   - `git status -sb`
 - `gitc -pl`
